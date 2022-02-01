@@ -1,9 +1,9 @@
 import { NS } from "../types/bitburner"
-import { getAvailableServerThreads } from "./utils"
+import { getAvailableServerThreads } from "./getAvailableServerThreads"
 
 export async function main(ns: NS) {
     const script = "share.js"
-    const hostname = "halp"
+    const hostname = "sharing"
     let idx = 0
 
     if (ns.args.length > 0) {

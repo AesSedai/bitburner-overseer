@@ -20,7 +20,22 @@ try {
     app.use(express.static(dist))
 
     app.get("/files", async (req, res) => {
-        res.send(fs.readdirSync(dist))
+        if (req.query.since != null) {
+            // @ts-expect-error
+            const querySince = new Date(req.query.since)
+            const files = fs.readdirSync(dist)
+            let lastUpdated = files.reduce((acc, file) => {
+                let ts = fs.statSync(path.join(dist, file)).mtime
+                return acc > ts ? acc : ts
+            }, new Date("0"))
+            if (querySince < lastUpdated) {
+                res.send({ lastUpdate: lastUpdated, files: fs.readdirSync(dist) })
+            } else {
+                res.send()
+            }
+        } else {
+            res.send(fs.readdirSync(dist))
+        }
     })
 
     app.listen(port, "0.0.0.0", () => {

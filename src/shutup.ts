@@ -1,0 +1,25 @@
+import { NS } from "../types/bitburner"
+
+export const shutup = (ns: NS) => {
+    ns.disableLog("disableLog")
+    ns.disableLog("killall")
+    ns.disableLog("exec")
+    ns.disableLog("scan")
+    ns.disableLog("sleep")
+    ns.disableLog("asleep")
+    ns.disableLog("scp")
+    ns.disableLog("getServerUsedRam")
+    ns.disableLog("getServerMaxRam")
+    ns.disableLog("getServerMoneyAvailable")
+    ns.disableLog("getServerMaxMoney")
+    ns.disableLog("getServerSecurityLevel")
+    ns.disableLog("getServerMinSecurityLevel")
+    ns.disableLog("brutessh")
+    ns.disableLog("ftpcrack")
+    ns.disableLog("httpworm")
+    ns.disableLog("relaysmtp")
+    ns.disableLog("sqlinject")
+    ns.disableLog("nuke")
+    ns.disableLog("getServerNumPortsRequired")
+    ns.disableLog("getServerGrowth")
+}

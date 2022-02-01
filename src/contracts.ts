@@ -2,8 +2,6 @@
 import { NS } from "../types/bitburner"
 
 async function solverArrayJumpingGame(ns: NS, arrayData: any) {
-    await ns.sleep(1000)
-    ns.tprint("solverArrayJumpingGame()")
     let arrayJump = [1]
 
     for (let n = 0; n < arrayData.length; n++) {
@@ -20,8 +18,6 @@ async function solverArrayJumpingGame(ns: NS, arrayData: any) {
 }
 
 async function solverGenerateIPs(ns: NS, arrayData: any) {
-    ns.tprint("solverGenerateIPs()")
-    await ns.sleep(1000)
     let i, j, k, l
 
     let arrayDigits = []
@@ -68,8 +64,6 @@ async function solverGenerateIPs(ns: NS, arrayData: any) {
 }
 
 async function solverLargestPrime(ns: NS, arrayData: any) {
-    ns.tprint("solverLargestPrime()")
-    await ns.sleep(1000)
     let primeFound = 0
 
     while (!primeFound) {
@@ -86,8 +80,6 @@ async function solverLargestPrime(ns: NS, arrayData: any) {
 }
 
 async function solverLargestSubset(ns: NS, arrayData: any) {
-    ns.tprint("solverLargestSubset()")
-    await ns.sleep(1000)
     let highestSubset = arrayData[0]
 
     for (let i = 0; i < arrayData.length; i++) {
@@ -107,10 +99,7 @@ async function solverLargestSubset(ns: NS, arrayData: any) {
 }
 
 async function solverMergeRanges(ns: NS, arrayData: any) {
-    ns.tprint("solverMergeRanges()")
-    await ns.sleep(1000)
-
-    let i, j, k
+    let i, j
     let rangeMax = 0
     let rangeMin = 999
     let outputRanges = []
@@ -147,8 +136,6 @@ async function solverMergeRanges(ns: NS, arrayData: any) {
 }
 
 async function solverSpiralizeMatrix(ns: NS, arrayData: any) {
-    ns.tprint("solverSpiralizeMatrix()")
-    await ns.sleep(1000)
     let i, j
 
     let arrayY = arrayData.length
@@ -202,9 +189,6 @@ async function solverSpiralizeMatrix(ns: NS, arrayData: any) {
 }
 
 async function solverStockTrader(ns: NS, arrayData: any) {
-    ns.tprint("solverStockTrader()")
-    await ns.sleep(1000)
-
     let i, j, k
 
     let tempStr = "[0"
@@ -261,8 +245,6 @@ async function solverStockTrader(ns: NS, arrayData: any) {
 }
 
 async function solverTrianglePath(ns: NS, arrayData: any) {
-    ns.tprint("solverTrianglePath()")
-    await ns.sleep(1000)
     let i, j
 
     for (i = 1; i < arrayData.length; i++) {
@@ -284,9 +266,6 @@ async function solverTrianglePath(ns: NS, arrayData: any) {
 }
 
 async function solverUniquePaths(ns: NS, arrayData: any) {
-    ns.tprint("solverUniquePaths()")
-    await ns.sleep(1000)
-
     let k = arrayData[0] - 1 // k
     let ak = arrayData[1] - 1 // n-k
     let n = k + ak // n = k + (n-k);
@@ -309,9 +288,7 @@ async function solverUniquePaths(ns: NS, arrayData: any) {
 }
 
 async function solverUniquePathsII(ns: NS, arrayData: any) {
-    ns.tprint("solverUniquePathsII()")
-    await ns.sleep(1000)
-    let i, j, k
+    let i, j
     let pathsTo: Array<Array<number>> = []
     for (i = 0; i < arrayData.length; i++) {
         pathsTo[i] = []
@@ -341,9 +318,7 @@ async function solverUniquePathsII(ns: NS, arrayData: any) {
 }
 
 async function solverWaysToExpress(ns: NS, arrayData: any) {
-    ns.tprint("solverWaysToExpress()")
-    await ns.sleep(1000)
-    let i, j, k
+    let i, j
 
     let operatorList = ["", "+", "-", "*"]
     let validExpressions = []
@@ -405,8 +380,6 @@ async function solverWaysToExpress(ns: NS, arrayData: any) {
 }
 
 async function solverWaysToSum(ns: NS, arrayData: any) {
-    ns.tprint("solverWaysToSum()")
-    await ns.sleep(1000)
     let precalcPartitions = [
         0, 0, 1, 2, 4, 6, 10, 14, 21, 29, 41, 55, 76, 100, 134, 175, 230, 296, 384, 489, 626, 791, 1001, 1254, 1574,
         1957, 2435, 3009, 3717, 4564, 5603, 6841, 8348, 10142, 12309, 14882, 17976, 21636, 26014, 31184, 37337, 44582,
@@ -424,6 +397,42 @@ async function solverWaysToSum(ns: NS, arrayData: any) {
     ]
 
     return precalcPartitions[arrayData]
+}
+
+async function sanitizeParentheses(ns: NS, arrayData: any) {
+    var solutions = new Set()
+
+    // Returns true and adds to solutions set if a string contains valid parentheses, false otherwise
+    var checkValidity = (str: string) => {
+        var nestLevel = 0
+        for (var c of str) {
+            if (c == "(") nestLevel++
+            else if (c == ")") nestLevel--
+            if (nestLevel < 0) return false
+        }
+
+        if (nestLevel == 0) solutions.add(str)
+        return nestLevel == 0
+    }
+
+    // Does a breadth first search to check all nodes at the target depth
+    var getNodesAtDepth = (str: string, targetDepth: number, curDepth = 0) => {
+        if (curDepth == targetDepth) checkValidity(str)
+        else
+            for (var i = 0; i < str.length; i++)
+                if (str[i] == "(" || str[i] == ")")
+                    getNodesAtDepth(str.slice(0, i) + str.slice(i + 1), targetDepth, curDepth + 1)
+    }
+
+    // Start from the top level and expand down until we find at least one solution
+    var targetDepth = 0
+    while (solutions.size == 0 && targetDepth < arrayData.length - 1) {
+        getNodesAtDepth(arrayData, targetDepth++)
+    }
+
+    // If no solutions were found, return [""]
+    if (solutions.size == 0) solutions.add("")
+    return `[${[...solutions].join(", ")}]`
 }
 
 export async function main(ns: NS) {
@@ -446,7 +455,6 @@ export async function main(ns: NS) {
 
         listIndex += 1
     }
-    ns.tprint("Completed server probe; now solving contracts")
 
     while (true) {
         await ns.sleep(1000)
@@ -473,7 +481,7 @@ export async function main(ns: NS) {
                         returnReward: true
                     })
 
-                    ns.tprint([listServers[listIndex], listFiles[z], inputType, outputData, outputResult])
+                    ns.print([listServers[listIndex], listFiles[z], inputType, outputData, outputResult])
                     if (!outputResult) {
                         ns.tprint("Failed data for debug: " + JSON.stringify(inputData))
                     }
@@ -488,7 +496,7 @@ export async function main(ns: NS) {
                         returnReward: true
                     })
 
-                    ns.tprint([listServers[listIndex], listFiles[z], inputType, outputData, outputResult])
+                    ns.print([listServers[listIndex], listFiles[z], inputType, outputData, outputResult])
                     if (!outputResult) {
                         ns.tprint("Failed data for debug: " + JSON.stringify(inputData))
                     }
@@ -504,7 +512,7 @@ export async function main(ns: NS) {
                         returnReward: true
                     })
 
-                    ns.tprint([listServers[listIndex], listFiles[z], inputType, outputData, outputResult])
+                    ns.print([listServers[listIndex], listFiles[z], inputType, outputData, outputResult])
                     if (!outputResult) {
                         ns.tprint("Failed data for debug: " + JSON.stringify(inputData))
                     }
@@ -515,7 +523,7 @@ export async function main(ns: NS) {
                         returnReward: true
                     })
 
-                    ns.tprint([listServers[listIndex], listFiles[z], inputType, outputData, outputResult])
+                    ns.print([listServers[listIndex], listFiles[z], inputType, outputData, outputResult])
                     if (!outputResult) {
                         ns.tprint("Failed data for debug: " + JSON.stringify(inputData))
                     }
@@ -538,7 +546,7 @@ export async function main(ns: NS) {
                         returnReward: true
                     })
 
-                    ns.tprint([listServers[listIndex], listFiles[z], inputType, outputData, outputResult])
+                    ns.print([listServers[listIndex], listFiles[z], inputType, outputData, outputResult])
                     if (!outputResult) {
                         ns.tprint("Failed data for debug: " + JSON.stringify(inputData))
                     }
@@ -549,7 +557,7 @@ export async function main(ns: NS) {
                         returnReward: true
                     })
 
-                    ns.tprint([listServers[listIndex], listFiles[z], inputType, outputData, outputResult])
+                    ns.print([listServers[listIndex], listFiles[z], inputType, outputData, outputResult])
                     if (!outputResult) {
                         ns.tprint("Failed data for debug: " + JSON.stringify(inputData))
                     }
@@ -561,7 +569,7 @@ export async function main(ns: NS) {
                         returnReward: true
                     })
 
-                    ns.tprint([listServers[listIndex], listFiles[z], inputType, outputData, outputResult])
+                    ns.print([listServers[listIndex], listFiles[z], inputType, outputData, outputResult])
                     if (!outputResult) {
                         ns.tprint("Failed data for debug: " + JSON.stringify(inputData))
                     }
@@ -573,7 +581,7 @@ export async function main(ns: NS) {
                         returnReward: true
                     })
 
-                    ns.tprint([listServers[listIndex], listFiles[z], inputType, outputData, outputResult])
+                    ns.print([listServers[listIndex], listFiles[z], inputType, outputData, outputResult])
                     if (!outputResult) {
                         ns.tprint("Failed data for debug: " + JSON.stringify(inputData))
                     }
@@ -584,7 +592,7 @@ export async function main(ns: NS) {
                         returnReward: true
                     })
 
-                    ns.tprint([listServers[listIndex], listFiles[z], inputType, outputData, outputResult])
+                    ns.print([listServers[listIndex], listFiles[z], inputType, outputData, outputResult])
                     if (!outputResult) {
                         ns.tprint("Failed data for debug: " + JSON.stringify(inputData))
                     }
@@ -596,7 +604,7 @@ export async function main(ns: NS) {
                         returnReward: true
                     })
 
-                    ns.tprint([listServers[listIndex], listFiles[z], inputType, outputData, outputResult])
+                    ns.print([listServers[listIndex], listFiles[z], inputType, outputData, outputResult])
                     if (!outputResult) {
                         ns.tprint("Failed data for debug: " + JSON.stringify(inputData))
                     }
@@ -607,7 +615,7 @@ export async function main(ns: NS) {
                         returnReward: true
                     })
 
-                    ns.tprint([listServers[listIndex], listFiles[z], inputType, outputData, outputResult])
+                    ns.print([listServers[listIndex], listFiles[z], inputType, outputData, outputResult])
                     if (!outputResult) {
                         ns.tprint("Failed data for debug: " + JSON.stringify(inputData))
                     }
@@ -618,7 +626,7 @@ export async function main(ns: NS) {
                         returnReward: true
                     })
 
-                    ns.tprint([listServers[listIndex], listFiles[z], inputType, outputData, outputResult])
+                    ns.print([listServers[listIndex], listFiles[z], inputType, outputData, outputResult])
                     if (!outputResult) {
                         ns.tprint("Failed data for debug: " + JSON.stringify(inputData))
                     }
@@ -629,7 +637,7 @@ export async function main(ns: NS) {
                         returnReward: true
                     })
 
-                    ns.tprint([listServers[listIndex], listFiles[z], inputType, outputData, outputResult])
+                    ns.print([listServers[listIndex], listFiles[z], inputType, outputData, outputResult])
                     if (!outputResult) {
                         ns.tprint("Failed data for debug: " + JSON.stringify(inputData))
                     }
@@ -640,13 +648,25 @@ export async function main(ns: NS) {
                         returnReward: true
                     })
 
-                    ns.tprint([listServers[listIndex], listFiles[z], inputType, outputData, outputResult])
+                    ns.print([listServers[listIndex], listFiles[z], inputType, outputData, outputResult])
+                    if (!outputResult) {
+                        ns.tprint("Failed data for debug: " + JSON.stringify(inputData))
+                    }
+                    break
+                case "Sanitize Parentheses in Expression":
+                    outputData = await sanitizeParentheses(ns, inputData)
+                    // @ts-expect-error
+                    outputResult = ns.codingcontract.attempt(outputData, listFiles[z], listServers[listIndex], {
+                        returnReward: true
+                    })
+
+                    ns.print([listServers[listIndex], listFiles[z], inputType, outputData, outputResult])
                     if (!outputResult) {
                         ns.tprint("Failed data for debug: " + JSON.stringify(inputData))
                     }
                     break
                 default:
-                    ns.tprint([listServers[listIndex], listFiles[z], inputType, "NO SOLVER YET"])
+                    ns.print([listServers[listIndex], listFiles[z], inputType, "NO SOLVER YET"])
                     break
             }
         }

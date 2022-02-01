@@ -1,13 +1,16 @@
 import { NS } from "../types/bitburner"
-import { scrape, killAll, getHackCost, getNetworkThreads, getAvailableServerThreads } from "./utils.js"
+import { killAll } from "./killAll"
+import { getHackCost } from "./getHackCost"
+import { getNetworkThreads } from "./getNetworkThreads"
+import { getAvailableServerThreads } from "./getAvailableServerThreads"
+import { shutup } from "./shutup"
+import { scrape } from "./scrape"
 
 const SCRIPTS = {
     grow: "grow.js",
     hack: "hack.js",
     weaken: "weaken.js"
 }
-
-let threadRange = []
 
 type Server = {
     server: string
@@ -32,7 +35,7 @@ const generateBatch = (ns: NS, target: string, availableThreads: number): Batch[
 
     // pre-conditioning
     if (extraSecurity > 5) {
-        const weakenThreadsRequired = Math.ceil(extraSecurity / 0.05) // threadRange.find((threads) => ns.weakenAnalyze(threads) > extraSecurity)
+        const weakenThreadsRequired = Math.ceil(extraSecurity / 0.05)
         ns.print(
             `Generating precondition (weaken) batch for ${target} (extra: ${
                 Math.round((extraSecurity + Number.EPSILON) * 100) / 100
@@ -60,32 +63,41 @@ const generateBatch = (ns: NS, target: string, availableThreads: number): Batch[
 
     let valid = false
     let returnBatch: Batch[] = []
+    let decrementer = takeRatio * 0.01
     while (!valid && takeRatio > 0) {
-        const toTake = ns.getServerMoneyAvailable(target) - ns.getServerMaxMoney(target) * takeRatio
+        const now = new Date().valueOf()
+        const toTake = Math.min(ns.getServerMaxMoney(target) * takeRatio, ns.getServerMoneyAvailable(target))
         const hackThreadsRequired = Math.floor(ns.hackAnalyzeThreads(target, toTake))
         const hackSecGrowth = ns.hackAnalyzeSecurity(hackThreadsRequired)
-        const hackSleep = Math.ceil(ns.getWeakenTime(target) - ns.getHackTime(target))
         const weaken1ThreadsRequired = Math.ceil((hackSecGrowth + extraSecurity * secMult) / 0.05)
-        const growRatio = ns.getServerMaxMoney(target) / (ns.getServerMoneyAvailable(target) - toTake) // can't let it be undefined now
+        const growRatio = Math.max(ns.getServerMaxMoney(target) / (ns.getServerMoneyAvailable(target) - toTake + 1), 1)
         const growThreadsRequired = Math.ceil(ns.growthAnalyze(target, growRatio))
-        const growSleep = Math.ceil(ns.getWeakenTime(target) - ns.getGrowTime(target) + sleepBuffer * 2)
         const growSecGrowth = ns.growthAnalyzeSecurity(growThreadsRequired)
         const weaken2ThreadsRequired = Math.ceil(growSecGrowth / 0.05)
-        const weaken2Sleep = Math.ceil(sleepBuffer * 3)
+
+        const hackSleep = ns.getWeakenTime(target) + now
+        const weaken1Sleep = ns.getWeakenTime(target) + sleepBuffer + now
+        const growSleep = ns.getWeakenTime(target) + sleepBuffer * 2 + now
+        const weaken2Sleep = ns.getWeakenTime(target) + sleepBuffer * 3 + now
 
         if (
             hackThreadsRequired + growThreadsRequired + weaken1ThreadsRequired + weaken2ThreadsRequired <
             availableThreads
         ) {
             returnBatch = [
-                { script: SCRIPTS.weaken, threads: weaken1ThreadsRequired, args: [target, sleepBuffer], servers: [] },
+                {
+                    script: SCRIPTS.weaken,
+                    threads: weaken1ThreadsRequired,
+                    args: [target, weaken1Sleep],
+                    servers: []
+                },
                 { script: SCRIPTS.weaken, threads: weaken2ThreadsRequired, args: [target, weaken2Sleep], servers: [] },
                 { script: SCRIPTS.hack, threads: hackThreadsRequired, args: [target, hackSleep], servers: [] },
                 { script: SCRIPTS.grow, threads: growThreadsRequired, args: [target, growSleep], servers: [] }
             ]
             valid = true
         } else {
-            takeRatio -= 0.01
+            takeRatio -= decrementer
         }
     }
 
@@ -158,44 +170,34 @@ type Target = {
 }
 
 export async function main(ns: NS) {
-    ns.disableLog("killall")
-    ns.disableLog("exec")
-    ns.disableLog("scan")
-    ns.disableLog("sleep")
-    ns.disableLog("asleep")
-    ns.disableLog("scp")
-    ns.disableLog("getServerUsedRam")
-    ns.disableLog("getServerMaxRam")
-    ns.disableLog("getServerMoneyAvailable")
-    ns.disableLog("getServerMaxMoney")
-    ns.disableLog("getServerSecurityLevel")
-    ns.disableLog("getServerMinSecurityLevel")
-    ns.disableLog("getServerGrowth")
+    shutup(ns)
+    ns.tail()
 
     const servers = Object.keys(scrape(ns))
     killAll(ns)
 
-    ns.print(`Available threads: ${getNetworkThreads(ns, "grow.js")}`)
+    ns.tprint(`Available threads: ${getNetworkThreads(ns, "grow.js")}`)
 
-    // generates array [1...maxThreads]
-    threadRange = [...Array(getNetworkThreads(ns, "grow.js")).keys()].map((i) => i + 1)
+    // let targets = servers
+    //     .filter((server) => ns.hasRootAccess(server))
+    //     .map((server): [string, number] => [server, getHackCost(ns, server)])
+    //     .filter((server) => server[1] > 0 && server[0] != "foodnstuff")
+    //     .sort((a, b) => b[1] - a[1])
+    //     .map((server) => {
+    //         return { name: server[0], batch: [] as Batch[] }
+    //     })
 
-    let targets = servers
-        .filter((server) => ns.hasRootAccess(server))
-        .map((server): [string, number] => [server, getHackCost(ns, server)])
-        .filter((server) => server[1] > 0 && server[0] != "foodnstuff")
-        .sort((a, b) => b[1] - a[1])
-        .map((server) => {
-            return { name: server[0], batch: [] as Batch[] }
-        })
-
-    // const targets = [
-    // 	{ name: "n00dles", batch: [] },
-    // 	{ name: "foodnstuff", batch: [] },
-    // 	{ name: "sigma-cosmetics", batch: [] },
-    // ]
+    const targets = [
+        { name: "n00dles", batch: [] },
+        { name: "sigma-cosmetics", batch: [] },
+        { name: "max-hardware", batch: [] }
+        // { name: "harakiri-sushi", batch: [] },
+        // { name: "phantasy", batch: [] }
+    ].filter((server) => ns.hasRootAccess(server.name))
 
     ns.print("targets ", targets)
+
+    // const workerNames = ["home"].concat(ns.getPurchasedServers().filter((server) => server.includes("helper")))
 
     const workerNames = servers.filter(
         (server) => ns.hasRootAccess(server) && getAvailableServerThreads(ns, server, SCRIPTS.weaken) > 1
@@ -226,9 +228,10 @@ export async function main(ns: NS) {
 
         for (let toAssign of idle) {
             const availableThreads = getWorkpoolThreads(ns, workers)
-            if (availableThreads > 5) {
+            if (availableThreads > 1) {
                 ns.print(`trying to assign ${toAssign.name}`)
                 const batch = generateBatch(ns, toAssign.name, availableThreads)
+                ns.print(`batch: ${JSON.stringify(batch)}`)
                 if (batch.length > 0) {
                     toAssign.batch = batch
                     await distributeBatchToNetwork(ns, workers, toAssign.batch)

@@ -1,5 +1,5 @@
 import { NS } from "../types/bitburner"
-import { scrape } from "./utils"
+import { scrape } from "./scrape"
 
 export async function main(ns: NS) {
     const servers = Object.keys(scrape(ns))

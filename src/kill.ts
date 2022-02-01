@@ -1,6 +1,6 @@
 import { NS } from "../types/bitburner"
-import { pwnAll } from "./pwnAll"
+import { killAll } from "./killAll"
 
 export async function main(ns: NS) {
-    pwnAll(ns, true)
+    killAll(ns)
 }
