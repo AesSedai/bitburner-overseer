@@ -10,12 +10,14 @@ const SCRIPTS = {
     weaken: "weaken.js"
 }
 
+let _ns: NS
 const SECURITY_THRESHOLD = 0.25
 const MONEY_THRESHOLD = 0.98
 const SLEEP_BUFFER = 30
 const BASE_TAKE_RATIO = 0.5
 const FREE_THREAD_RATIO_THRESHOLD = 0.1
 const WORKER_SERVER_NAME = "worker"
+const MAX_RUNTIME = new Date().valueOf() + 2 * 60 * 60 * 1000 // 2 hours
 
 type EnqueueOpResult = {
     success: boolean
@@ -23,32 +25,30 @@ type EnqueueOpResult = {
 }
 
 class Worker {
-    #ns: NS
     name: string
     availableThreads: number = 0
     reservedRam: number = 0
     pendingQueue: Operation[] = []
 
-    constructor(ns: NS, name: string, reservedRam: number = 0) {
-        this.#ns = ns
+    constructor(name: string, reservedRam: number = 0) {
         this.name = name
         this.reservedRam = reservedRam
         // this.availableThreads = Math.max(0, Math.floor(this.getAvailableRam() / this.#ns.getScriptRam(SCRIPTS.weaken)))
     }
 
     getAvailableRam = (): number => {
-        return this.#ns.getServerMaxRam(this.name) - this.#ns.getServerUsedRam(this.name) - this.reservedRam
+        return _ns.getServerMaxRam(this.name) - _ns.getServerUsedRam(this.name) - this.reservedRam
     }
 
-    getAvailableThreads = (): number => {
+    getAvailableThreads = (script: string = SCRIPTS.weaken): number => {
         return (
-            Math.max(0, Math.floor(this.getAvailableRam() / this.#ns.getScriptRam(SCRIPTS.weaken))) -
+            Math.max(0, Math.floor(this.getAvailableRam() / _ns.getScriptRam(SCRIPTS.weaken))) -
             this.getPendingThreads()
         )
     }
 
     getMaxThreads = (): number => {
-        return Math.floor(this.#ns.getServerMaxRam(this.name) / this.#ns.getScriptRam(SCRIPTS.weaken))
+        return Math.floor(_ns.getServerMaxRam(this.name) / _ns.getScriptRam(SCRIPTS.weaken))
     }
 
     getPendingThreads = (): number => {
@@ -85,11 +85,11 @@ class Worker {
             // this.#ns.tprint(`[${this.name}] executing ${JSON.stringify(op)}`)
             const nonce = Math.random()
             if (op.threads === 0) {
-                this.#ns.tprint(`[${this.name}] OP threads should not be 0: ${JSON.stringify(op)}`)
+                _ns.tprint(`[${this.name}] OP threads should not be 0: ${JSON.stringify(op)}`)
             }
-            const pid = this.#ns.exec(op.script, this.name, op.threads, ...getOperationArgs(op), nonce)
+            const pid = _ns.exec(op.script, this.name, op.threads, ...getOperationArgs(op), nonce)
             if (pid === 0) {
-                this.#ns.tprint(
+                _ns.tprint(
                     `[${this.name}] pid should not be 0. AvailableThreads: ${
                         this.availableThreads
                     } getAvailableRam: ${this.getAvailableRam()} getAvailableThreads: ${this.getAvailableThreads()} Server: ${
@@ -103,30 +103,28 @@ class Worker {
 }
 
 class Target {
-    #ns: NS
     name: string
     preconditioning: boolean = false
     scheduleAfter: number = new Date().valueOf()
 
-    constructor(ns: NS, name: string) {
-        this.#ns = ns
+    constructor(name: string) {
         this.name = name
     }
 
     getHackCost = () => {
-        return getHackCost(this.#ns, this.name)
+        return getHackCost(_ns, this.name)
     }
 
     getAvailableMoneyRatio = () => {
         return (
             1 -
-            (this.#ns.getServerMaxMoney(this.name) - this.#ns.getServerMoneyAvailable(this.name)) /
-                this.#ns.getServerMaxMoney(this.name)
+            (_ns.getServerMaxMoney(this.name) - _ns.getServerMoneyAvailable(this.name)) /
+                _ns.getServerMaxMoney(this.name)
         )
     }
 
     getExtraSecurity = () => {
-        return this.#ns.getServerSecurityLevel(this.name) - this.#ns.getServerMinSecurityLevel(this.name)
+        return _ns.getServerSecurityLevel(this.name) - _ns.getServerMinSecurityLevel(this.name)
     }
 
     isOptimal = () => {
@@ -151,11 +149,11 @@ const getOperationArgs = (op: Operation) => {
     return [op.target, op.finishAt]
 }
 
-const getMaxThreads = (ns: NS, workers: Worker[]) => {
+const getMaxThreads = (workers: Worker[]) => {
     return workers.reduce((acc, worker) => acc + worker.getMaxThreads(), 0)
 }
 
-const getAvailableThreads = (ns: NS, workers: Worker[]) => {
+const getAvailableThreads = (workers: Worker[]) => {
     return workers.reduce((acc, worker) => acc + worker.getAvailableThreads(), 0)
 }
 
@@ -163,18 +161,18 @@ const niceRound = (n: number): number => {
     return Math.round((n + Number.EPSILON) * 100) / 100
 }
 
-const generatePreconditionOps = (ns: NS, target: Target, workers: Worker[]): Operation[] => {
+const generatePreconditionOps = (target: Target, workers: Worker[]): Operation[] => {
     // ns.tprint(`[${target.name}] generating precondition ops`)
     const operations: Operation[] = []
-    let availableThreads = getAvailableThreads(ns, workers)
+    let availableThreads = getAvailableThreads(workers)
     let weakenThreadsRequired = Math.ceil(target.getExtraSecurity() / 0.05)
     let prevWeaken = false
 
     // weaken pre-conditioning
     if (target.getExtraSecurity() > SECURITY_THRESHOLD) {
         const now = new Date().valueOf()
-        const minFinishAt = Math.max(target.scheduleAfter - now, 0)
-        const weakenFinishAt = ns.getWeakenTime(target.name) + now + minFinishAt
+        const minFinishAt = Math.max(target.scheduleAfter, now + _ns.getWeakenTime(target.name))
+        const weakenFinishAt = minFinishAt
         prevWeaken = true
 
         if (weakenThreadsRequired === 0) {
@@ -221,18 +219,17 @@ const generatePreconditionOps = (ns: NS, target: Target, workers: Worker[]): Ope
         let decrementer = 1
         while (!valid && decrementer > 0) {
             const now = new Date().valueOf()
-            const minFinishAt = Math.max(target.scheduleAfter - now, 0)
+            const minFinishAt = Math.max(target.scheduleAfter, now + _ns.getWeakenTime(target.name))
             const growRatio = Math.max(
-                (ns.getServerMaxMoney(target.name) / ns.getServerMoneyAvailable(target.name)) * 1.1 * decrementer,
+                (_ns.getServerMaxMoney(target.name) / _ns.getServerMoneyAvailable(target.name)) * 1.1 * decrementer,
                 1
             )
-            const growThreadsRequired = Math.ceil(ns.growthAnalyze(target.name, growRatio))
-            const growSecGrowth = ns.growthAnalyzeSecurity(growThreadsRequired)
+            const growThreadsRequired = Math.ceil(_ns.growthAnalyze(target.name, growRatio))
+            const growSecGrowth = _ns.growthAnalyzeSecurity(growThreadsRequired)
             const weakenThreadsRequired = Math.ceil(growSecGrowth / 0.05)
 
-            const growFinishAt = ns.getWeakenTime(target.name) + now + minFinishAt + (prevWeaken ? SLEEP_BUFFER : 0)
-            const weakenFinishAt =
-                ns.getWeakenTime(target.name) + SLEEP_BUFFER + now + minFinishAt + (prevWeaken ? SLEEP_BUFFER : 0)
+            const growFinishAt = minFinishAt + (prevWeaken ? SLEEP_BUFFER : 0)
+            const weakenFinishAt = minFinishAt + SLEEP_BUFFER + (prevWeaken ? SLEEP_BUFFER : 0)
 
             if (growThreadsRequired === 0 || weakenThreadsRequired === 0) {
                 decrementer = 0
@@ -268,34 +265,34 @@ const generatePreconditionOps = (ns: NS, target: Target, workers: Worker[]): Ope
     return operations
 }
 
-const generateHackOps = (ns: NS, target: Target, workers: Worker[]) => {
+const generateHackOps = (target: Target, workers: Worker[]) => {
     // ns.tprint(`[${target.name}] generating hack ops`)
     let operations: Operation[] = []
     let takeRatio = BASE_TAKE_RATIO
     const secMult = target.getExtraSecurity() > 0 ? 1 : 0
-    const availableThreads = getAvailableThreads(ns, workers)
+    const availableThreads = getAvailableThreads(workers)
 
     let valid = false
     const decrementer = takeRatio * 0.01
     while (!valid && takeRatio > 0) {
         const now = new Date().valueOf()
-        const minFinishAt = Math.max(target.scheduleAfter - now, 0)
-        const toTake = ns.getServerMaxMoney(target.name) * takeRatio
-        const hackThreadsRequired = Math.floor(ns.hackAnalyzeThreads(target.name, toTake))
-        const hackSecGrowth = ns.hackAnalyzeSecurity(hackThreadsRequired) * 1.1
+        const minFinishAt = Math.max(target.scheduleAfter, now + _ns.getWeakenTime(target.name))
+        const toTake = _ns.getServerMaxMoney(target.name) * takeRatio
+        const hackThreadsRequired = Math.floor(_ns.hackAnalyzeThreads(target.name, toTake))
+        const hackSecGrowth = _ns.hackAnalyzeSecurity(hackThreadsRequired) * 1.1
         const weaken1ThreadsRequired = Math.ceil((hackSecGrowth + target.getExtraSecurity() * secMult) / 0.05)
         const growRatio = Math.max(
-            (ns.getServerMaxMoney(target.name) / (ns.getServerMoneyAvailable(target.name) - toTake + 1)) * 1.1,
+            (_ns.getServerMaxMoney(target.name) / (_ns.getServerMoneyAvailable(target.name) - toTake + 1)) * 1.1,
             1
         )
-        const growThreadsRequired = Math.ceil(ns.growthAnalyze(target.name, growRatio))
-        const growSecGrowth = ns.growthAnalyzeSecurity(growThreadsRequired) * 1.1
+        const growThreadsRequired = Math.ceil(_ns.growthAnalyze(target.name, growRatio))
+        const growSecGrowth = _ns.growthAnalyzeSecurity(growThreadsRequired) * 1.1
         const weaken2ThreadsRequired = Math.ceil(growSecGrowth / 0.05)
 
-        const hackFinishAt = ns.getWeakenTime(target.name) + now + minFinishAt
-        const weaken1FinishAt = ns.getWeakenTime(target.name) + SLEEP_BUFFER + now + minFinishAt
-        const growFinishAt = ns.getWeakenTime(target.name) + SLEEP_BUFFER * 2 + now + minFinishAt
-        const weaken2FinishAt = ns.getWeakenTime(target.name) + SLEEP_BUFFER * 3 + now + minFinishAt
+        const hackFinishAt = minFinishAt
+        const weaken1FinishAt = minFinishAt + SLEEP_BUFFER
+        const growFinishAt = minFinishAt + SLEEP_BUFFER * 2
+        const weaken2FinishAt = minFinishAt + SLEEP_BUFFER * 3
 
         if (
             hackThreadsRequired === 0 ||
@@ -345,7 +342,6 @@ const generateHackOps = (ns: NS, target: Target, workers: Worker[]) => {
 }
 
 export const distributeToNetwork = (
-    ns: NS,
     target: Target,
     batch: Operation[],
     workers: Worker[],
@@ -354,7 +350,10 @@ export const distributeToNetwork = (
     // ns.tprint(`[${target.name}] distribute start`)
     const toExecute: { [k in string]: Worker } = {}
     let abandon = false
-    let latestFinish = batch.reduce((acc, op) => (acc > op.finishAt ? acc : op.finishAt), new Date().valueOf())
+    let latestFinish = batch.reduce(
+        (acc, op) => (acc > op.finishAt ? acc : op.finishAt),
+        _ns.getWeakenTime(target.name)
+    )
 
     for (let op of batch) {
         // ns.tprint("Op ", op, " abandon ", abandon)
@@ -422,10 +421,10 @@ type Config = {
     optimized: Target[]
 }
 
-const doConfigure = async (ns: NS, props: ConfigProps, previousConfig?: Config): Promise<Config> => {
+const doConfigure = async (props: ConfigProps, previousConfig?: Config): Promise<Config> => {
     // list of all server names and player purchased server names
-    let allServers = Object.keys(scrape(ns))
-    let playerServers = ns.getPurchasedServers()
+    let allServers = Object.keys(scrape(_ns))
+    let playerServers = _ns.getPurchasedServers()
 
     // list of rooted company servers, filtered by above lists
     let companyServers = allServers
@@ -433,18 +432,18 @@ const doConfigure = async (ns: NS, props: ConfigProps, previousConfig?: Config):
         .filter((name) => !playerServers.includes(name))
         .filter((name) => !props.excludeList.includes(name))
         .filter((name) => !props.excludeListReverse.some((e) => name.includes(e)))
-        .filter((name) => pwn(ns, name))
+        .filter((name) => pwn(_ns, name))
 
     let targetServers = allServers
         .filter((name) => name !== "home")
         .filter((name) => !playerServers.includes(name))
         .filter((name) => !props.excludeList.includes(name))
         .filter((name) => !props.excludeListReverse.some((e) => name.includes(e)))
-        .filter((name) => pwn(ns, name))
+        .filter((name) => pwn(_ns, name))
 
     // filter out the "hard" to precondition ones if there are still quicker targets (10 minute limit)
-    if (targetServers.filter((name) => ns.getWeakenTime(name) < 10 * 60 * 1000).length !== 0) {
-        targetServers = targetServers.filter((name) => ns.getWeakenTime(name) < 10 * 60 * 1000)
+    if (targetServers.filter((name) => _ns.getWeakenTime(name) < 10 * 60 * 1000).length !== 0) {
+        targetServers = targetServers.filter((name) => _ns.getWeakenTime(name) < 10 * 60 * 1000)
     }
 
     // list of purchased servers, filtered by above lists
@@ -484,10 +483,10 @@ const doConfigure = async (ns: NS, props: ConfigProps, previousConfig?: Config):
         if (newWorkers.length > 0) {
             for (let workerName of newWorkers) {
                 const ram = companyServers.includes(workerName) ? props.reservedCompanyRAM : props.reservedPlayerRAM
-                const worker = new Worker(ns, workerName, ram)
+                const worker = new Worker(workerName, ram)
                 if (worker.getAvailableThreads() > 1) {
-                    ns.print(`Adding new worker: ${JSON.stringify(worker)}`)
-                    await ns.scp([SCRIPTS.grow, SCRIPTS.hack, SCRIPTS.weaken], worker.name)
+                    _ns.print(`Adding new worker: ${JSON.stringify(worker)}`)
+                    await _ns.scp([SCRIPTS.grow, SCRIPTS.hack, SCRIPTS.weaken], worker.name)
                     workers.push(worker)
                 }
             }
@@ -500,7 +499,7 @@ const doConfigure = async (ns: NS, props: ConfigProps, previousConfig?: Config):
         // precondition.push(...demoted)
 
         for (let promo of promoted) {
-            ns.print(`Promoted: ${JSON.stringify(promo.name)}`)
+            _ns.print(`Promoted: ${JSON.stringify(promo.name)}`)
             optimized.push(promo)
         }
 
@@ -515,22 +514,22 @@ const doConfigure = async (ns: NS, props: ConfigProps, previousConfig?: Config):
         // }
 
         let newTargets = targetServers
-            .filter((name) => ns.getServerMaxMoney(name) > 0 && ns.getServerMoneyAvailable(name) > 0)
+            .filter((name) => _ns.getServerMaxMoney(name) > 0 && _ns.getServerMoneyAvailable(name) > 0)
             .filter((name) => !existingTargetNames.includes(name))
-            .map((name) => new Target(ns, name))
+            .map((name) => new Target(name))
             .sort((a, b) => b.getHackCost() - a.getHackCost())
 
         if (newTargets.length > 0) {
             let newOptimal = newTargets.filter((target) => target.isOptimal())
             for (let target of newOptimal) {
-                ns.print(`Adding new target as optimized: ${JSON.stringify(target)}`)
+                _ns.print(`Adding new target as optimized: ${JSON.stringify(target)}`)
                 target.preconditioning = false
                 optimized.push(target)
             }
 
             let newPrecondition = newTargets.filter((target) => !target.isOptimal())
             for (let target of newPrecondition) {
-                ns.print(`Adding new target as precondition: ${JSON.stringify(target)}`)
+                _ns.print(`Adding new target as precondition: ${JSON.stringify(target)}`)
                 precondition.push(target)
             }
         }
@@ -554,31 +553,31 @@ const doConfigure = async (ns: NS, props: ConfigProps, previousConfig?: Config):
         if (workerNames.length > 0) {
             for (let workerName of workerNames) {
                 const ram = companyServers.includes(workerName) ? props.reservedCompanyRAM : props.reservedPlayerRAM
-                const worker = new Worker(ns, workerName, ram)
+                const worker = new Worker(workerName, ram)
                 if (worker.getAvailableThreads() > 1) {
-                    ns.print(`Adding new worker: ${JSON.stringify(worker)}`)
-                    await ns.scp([SCRIPTS.grow, SCRIPTS.hack, SCRIPTS.weaken], worker.name)
+                    _ns.print(`Adding new worker: ${JSON.stringify(worker)}`)
+                    await _ns.scp([SCRIPTS.grow, SCRIPTS.hack, SCRIPTS.weaken], worker.name)
                     workers.push(worker)
                 }
             }
         }
 
         let allTargets = targetServers
-            .filter((name) => ns.getServerMaxMoney(name) > 0 && ns.getServerMoneyAvailable(name) > 0)
-            .map((name) => new Target(ns, name))
+            .filter((name) => _ns.getServerMaxMoney(name) > 0 && _ns.getServerMoneyAvailable(name) > 0)
+            .map((name) => new Target(name))
             .sort((a, b) => b.getHackCost() - a.getHackCost())
 
         if (allTargets.length > 0) {
             let newOptimal = allTargets.filter((target) => target.isOptimal())
             for (let target of newOptimal) {
-                ns.print(`Adding new target as optimized: ${JSON.stringify(target)}`)
+                _ns.print(`Adding new target as optimized: ${JSON.stringify(target)}`)
                 target.preconditioning = false
                 optimized.push(target)
             }
 
             let newPrecondition = allTargets.filter((target) => !target.isOptimal())
             for (let target of newPrecondition) {
-                ns.print(`Adding new target as precondition: ${JSON.stringify(target)}`)
+                _ns.print(`Adding new target as precondition: ${JSON.stringify(target)}`)
                 precondition.push(target)
             }
         }
@@ -599,36 +598,33 @@ const doConfigure = async (ns: NS, props: ConfigProps, previousConfig?: Config):
     }
 }
 
-const maybeBuyServer = (ns: NS, config: Config): string => {
+const maybeBuyServer = (config: Config): string => {
     const ts = new Date()
     const now = `${ts.toLocaleDateString()} ${ts.toLocaleTimeString()}`
     let result = ""
     // do we need to buy a server?
-    if (
-        (getAvailableThreads(ns, config.workers) / getMaxThreads(ns, config.workers)) * 1.0 <
-        FREE_THREAD_RATIO_THRESHOLD
-    ) {
+    if ((getAvailableThreads(config.workers) / getMaxThreads(config.workers)) * 1.0 < FREE_THREAD_RATIO_THRESHOLD) {
         //  can we buy a new one?
-        const limit = ns.getPurchasedServerLimit()
-        let purchased = ns.getPurchasedServers()
+        const limit = _ns.getPurchasedServerLimit()
+        let purchased = _ns.getPurchasedServers()
 
         if (purchased.length === limit) {
             // can we sell a smaller one?
-            purchased = ns.getPurchasedServers().filter((name) => name.includes(WORKER_SERVER_NAME))
+            purchased = _ns.getPurchasedServers().filter((name) => name.includes(WORKER_SERVER_NAME))
             if (purchased.length > 0) {
                 const smallest = purchased.reduce(
-                    (acc, server) => (ns.getServerMaxRam(server) < ns.getServerMaxRam(acc) ? server : acc),
+                    (acc, server) => (_ns.getServerMaxRam(server) < _ns.getServerMaxRam(acc) ? server : acc),
                     purchased[0]
                 )
-                if (ns.getServerMaxRam(smallest) < 1048576) {
-                    ns.deleteServer(smallest)
+                if (_ns.getServerMaxRam(smallest) < 1048576) {
+                    _ns.deleteServer(smallest)
                 } else {
                     result = `[${now}] Want to buy server, but currently all worker nodes are fully upgraded.`
                 }
             } else {
                 result = `[${now}] Want to buy server, but currently at purchased server limit and there are no worker nodes to upgrade.`
             }
-            purchased = ns.getPurchasedServers()
+            purchased = _ns.getPurchasedServers()
         }
 
         if (purchased.length < limit) {
@@ -636,16 +632,16 @@ const maybeBuyServer = (ns: NS, config: Config): string => {
             const minServerSize = Math.min(
                 Math.max(
                     purchased.reduce(
-                        (acc, server) => (ns.getServerMaxRam(server) > acc ? ns.getServerMaxRam(server) : acc),
+                        (acc, server) => (_ns.getServerMaxRam(server) > acc ? _ns.getServerMaxRam(server) : acc),
                         0
                     ) * 2,
                     1 * 1024
                 ),
                 1048576
             )
-            const diff = ns.getPurchasedServerCost(minServerSize) - ns.getPlayer().money
+            const diff = _ns.getPurchasedServerCost(minServerSize) - _ns.getPlayer().money
             if (diff < 0) {
-                const res = ns.purchaseServer(WORKER_SERVER_NAME, minServerSize)
+                const res = _ns.purchaseServer(WORKER_SERVER_NAME, minServerSize)
                 if (res.length === 0) {
                     result = `[${now}] Somehow failed to purchase server with ${minServerSize} RAM`
                 } else {
@@ -653,7 +649,7 @@ const maybeBuyServer = (ns: NS, config: Config): string => {
                 }
             } else {
                 result = `[${now}] Want to purchase a sever with ${minServerSize} RAM, but no money (${niceRound(
-                    (ns.getPlayer().money / ns.getPurchasedServerCost(minServerSize)) * 100
+                    (_ns.getPlayer().money / _ns.getPurchasedServerCost(minServerSize)) * 100
                 )}%)`
             }
         }
@@ -663,8 +659,9 @@ const maybeBuyServer = (ns: NS, config: Config): string => {
 }
 
 export async function main(ns: NS) {
-    shutup(ns)
-    ns.tail()
+    _ns = ns
+    shutup(_ns)
+    _ns.tail()
 
     const configProps: ConfigProps = {
         // amount of RAM to reserve on a host (in GB) for player and company servers
@@ -679,23 +676,23 @@ export async function main(ns: NS) {
         // option to kill other scripts on worker servers: [true] / false
         killOtherScripts: true,
         // list of script names to not kill, regardless of `killOtherScripts` option
-        scriptAllowlist: [ns.getScriptName()].concat("contracts.js", "share.js", "wget-all.js"),
+        scriptAllowlist: [_ns.getScriptName()].concat("contracts.js", "share.js", "wget-all.js"),
         // list of servers NOT to use as workers (exact name match)
         excludeList: ["sharing"],
         // list of servers NOT to use as workers (regex-like via inverse `includes`)
         excludeListReverse: ["sharing-"]
     }
 
-    let config = await doConfigure(ns, configProps)
+    let config = await doConfigure(configProps)
 
     // ns.tprint(`Available threads: ${getAvailableThreads(ns, config.workers)}`)
 
     if (configProps.killOtherScripts) {
         for (let worker of config.workers) {
-            const processes = ns.ps(worker.name)
+            const processes = _ns.ps(worker.name)
             for (let process of processes) {
                 if (!configProps.scriptAllowlist.includes(process.filename)) {
-                    ns.kill(process.filename, worker.name, ...process.args)
+                    _ns.kill(process.filename, worker.name, ...process.args)
                 }
             }
         }
@@ -708,34 +705,38 @@ export async function main(ns: NS) {
         // ~ every second
         if (iters % 25 === 0) {
             let now = new Date()
+            if (now.valueOf() > MAX_RUNTIME) {
+                // respawn every 2h
+                _ns.spawn(_ns.getScriptName())
+            }
+
             // ns.tprint("started config regen")
-            config = await doConfigure(ns, configProps, config)
+            config = await doConfigure(configProps, config)
             // ns.tprint("completed config regen")
 
-            ns.clearLog()
-            ns.print(`=============================================`)
-            ns.print(`Time: ${now.toLocaleDateString()} ${now.toLocaleTimeString()}`)
-            ns.print(
-                `Available threads: ${getAvailableThreads(ns, config.workers)} / ${getMaxThreads(
-                    ns,
+            _ns.clearLog()
+            _ns.print(`=============================================`)
+            _ns.print(`Time: ${now.toLocaleDateString()} ${now.toLocaleTimeString()}`)
+            _ns.print(
+                `Available threads: ${getAvailableThreads(config.workers)} / ${getMaxThreads(
                     config.workers
-                )} (${niceRound(
-                    (getAvailableThreads(ns, config.workers) / getMaxThreads(ns, config.workers)) * 100.0
-                )}%)`
+                )} (${niceRound((getAvailableThreads(config.workers) / getMaxThreads(config.workers)) * 100.0)}%)`
             )
 
-            const purchaseResult = maybeBuyServer(ns, config)
+            const purchaseResult = maybeBuyServer(config)
             if (purchaseResult.length > 0) {
                 lastPurchaseResult = purchaseResult
             }
 
             if (lastPurchaseResult.length > 0) {
-                ns.print(lastPurchaseResult)
+                _ns.print(lastPurchaseResult)
             }
+
+            _ns.print(`Optimized: ${config.optimized.length}, Precondition: ${config.precondition.length}`)
 
             if (config.optimized.length > 0) {
                 let o = config.optimized[0]
-                ns.print(
+                _ns.print(
                     `[O: ${o.name}]: Extrasec: ${niceRound(o.getExtraSecurity())}, Money: ${niceRound(
                         o.getAvailableMoneyRatio()
                     )}, Cost: ${niceRound(o.getHackCost())}`
@@ -744,24 +745,23 @@ export async function main(ns: NS) {
 
             if (config.precondition.length > 0) {
                 let p = config.precondition[0]
-                ns.print(
+                _ns.print(
                     `[P: ${p.name}]: Extrasec: ${niceRound(p.getExtraSecurity())}, Money: ${niceRound(
                         p.getAvailableMoneyRatio()
                     )}, Cost: ${niceRound(p.getHackCost())}`
                 )
             }
-            ns.print(`=============================================`)
+            _ns.print(`=============================================`)
         }
 
         // ns.tprint(`now: ${new Date().valueOf()}`)
         // try to schedule at least the most optimal hack()
         let firstOptimalName = ""
-        if (getAvailableThreads(ns, config.workers) > 4 && config.optimized.length > 0) {
+        if (getAvailableThreads(config.workers) > 4 && config.optimized.length > 0) {
             let firstOptimal = config.optimized[0]
             // ns.tprint(`Starting check for optimal[0] ${firstOptimal.name}`)
             firstOptimalName = firstOptimal.name
-            let minCycleTime = ns.getWeakenTime(firstOptimal.name)
-            let maxCycleTime = minCycleTime * 2
+            let maxCycleTime = _ns.getWeakenTime(firstOptimal.name) * 2
             let now = new Date().valueOf()
             let valid = true
             while (firstOptimal.scheduleAfter < now + maxCycleTime && valid) {
@@ -771,12 +771,12 @@ export async function main(ns: NS) {
                 //         firstOptimal.scheduleAfter
                 //     }, now: ${now}, maxCycle: ${maxCycleTime}, now+: ${now + maxCycleTime}`
                 // )
-                const ops = generateHackOps(ns, firstOptimal, config.workers)
+                const ops = generateHackOps(firstOptimal, config.workers)
                 // ns.tprint("ops ", ops)
                 if (ops.length > 0) {
                     // assign / distribute
                     // ns.tprint(`Distributing optimal[0] ${firstOptimal.name} assignment`)
-                    distributeToNetwork(ns, firstOptimal, ops, config.workers)
+                    distributeToNetwork(firstOptimal, ops, config.workers)
                     // ns.tprint(`Distributed optimal[0] ${firstOptimal.name} assignment`)
                 } else {
                     valid = false
@@ -787,17 +787,17 @@ export async function main(ns: NS) {
         }
 
         // after, try to schedule optimizing the first precondition
-        if (getAvailableThreads(ns, config.workers) > 2 && config.precondition.length > 0) {
+        if (getAvailableThreads(config.workers) > 2 && config.precondition.length > 0) {
             let firstPrecondition = config.precondition[0]
             let now = new Date().valueOf()
             if (firstPrecondition.scheduleAfter < now) {
                 // ns.tprint(`Trying to schedule preconditioning[0] ${firstPrecondition.name} conditions`)
-                const ops = generatePreconditionOps(ns, firstPrecondition, config.workers)
+                const ops = generatePreconditionOps(firstPrecondition, config.workers)
                 // ns.print("precondition ops ", JSON.stringify(ops))
                 if (ops.length > 0) {
                     // assign / distribute
                     // ns.tprint(`Distributing preconditioning[0] ${firstPrecondition.name} assignment`)
-                    distributeToNetwork(ns, firstPrecondition, ops, config.workers, true)
+                    distributeToNetwork(firstPrecondition, ops, config.workers, true)
                     // ns.tprint(`Distributed preconditioning[0] ${firstPrecondition.name} assignment`)
                 }
             }
@@ -805,25 +805,30 @@ export async function main(ns: NS) {
 
         // try to schedule the remaining hacks
         let exhausted = false
-        if (getAvailableThreads(ns, config.workers) > 4) {
+        if (getAvailableThreads(config.workers) > 4) {
             for (let target of config.optimized) {
-                if (getAvailableThreads(ns, config.workers) > 4 && !exhausted && target.name !== firstOptimalName) {
-                    let maxCycleTime = ns.getWeakenTime(target.name) * 2
-                    const now = new Date().valueOf()
-                    if (target.scheduleAfter < now + maxCycleTime) {
+                if (getAvailableThreads(config.workers) > 4 && !exhausted && target.name !== firstOptimalName) {
+                    let maxCycleTime = _ns.getWeakenTime(target.name) * 2
+                    let now = new Date().valueOf()
+                    let valid = true
+                    while (target.scheduleAfter < now + maxCycleTime && valid) {
                         // ns.tprint(`Trying to schedule a target hack for ${target.name}`)
-                        const ops = generateHackOps(ns, target, config.workers)
+                        const ops = generateHackOps(target, config.workers)
                         if (ops.length > 0) {
                             // ns.print("assign ops ", JSON.stringify(ops))
                             // assign / distribute
                             // ns.tprint(`Distributing ${target.name} hack`)
-                            distributeToNetwork(ns, target, ops, config.workers)
+                            distributeToNetwork(target, ops, config.workers)
                             // ns.tprint(`Distributed ${target.name} hack`)
                         } else {
-                            exhausted = true
-                            break
+                            valid = false
                         }
+                        now = new Date().valueOf()
                     }
+                }
+                if (getAvailableThreads(config.workers) <= 4) {
+                    exhausted = true
+                    break
                 }
             }
         }
@@ -831,7 +836,7 @@ export async function main(ns: NS) {
         // ns.print("config second ", JSON.stringify(config))
         //
 
-        await ns.asleep(SLEEP_BUFFER)
+        await _ns.asleep(SLEEP_BUFFER)
         iters = (iters + 1) % 10000
     }
 }

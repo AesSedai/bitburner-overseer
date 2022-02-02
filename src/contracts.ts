@@ -1,5 +1,7 @@
 // autocontract.ns v20190515 by /u/hyperpandiculation
 import { NS } from "../types/bitburner"
+import { scrape } from "./scrape"
+import { shutup } from "./shutup"
 
 async function solverArrayJumpingGame(ns: NS, arrayData: any) {
     let arrayJump = [1]
@@ -436,25 +438,11 @@ async function sanitizeParentheses(ns: NS, arrayData: any) {
 }
 
 export async function main(ns: NS) {
-    let listServers = ["home"]
+    shutup(ns)
+    ns.tail()
+
+    let listServers = Object.keys(scrape(ns))
     let listIndex = 0
-
-    ns.disableLog("killall")
-    ns.disableLog("exec")
-    ns.disableLog("scan")
-    ns.disableLog("sleep")
-    ns.disableLog("asleep")
-
-    while (listIndex < listServers.length) {
-        let listScan = ns.scan(listServers[listIndex])
-        for (let i = 0; i < listScan.length; i++) {
-            if (listServers.indexOf(listScan[i]) === -1) {
-                listServers[listServers.length] = listScan[i]
-            }
-        }
-
-        listIndex += 1
-    }
 
     while (true) {
         await ns.sleep(1000)
