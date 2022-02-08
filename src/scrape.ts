@@ -13,11 +13,11 @@ export const scrape = (ns: NS) => {
             ns.scan(server).forEach((conServer) => {
                 if (!["home"].includes(conServer)) {
                     if (server != null && !serverConnections[server].includes(conServer)) {
-                        serverConnections[server].push(conServer)
+                        serverConnections[server].unshift(conServer)
                     }
 
                     if (!serverConnections[conServer]) {
-                        toExplore.push(conServer)
+                        toExplore.unshift(conServer)
                     }
                 }
             })

@@ -1,23 +1,27 @@
-import { NS } from "../types/bitburner"
+import { NS, Server } from "../types/bitburner"
 import { getHackCost } from "./getHackCost"
 import { pwn } from "./pwn"
 import { shutup } from "./shutup"
 import { scrape } from "./scrape"
+import { niceRound } from "./utils"
 
 const SCRIPTS = {
     grow: "grow.js",
     hack: "hack.js",
-    weaken: "weaken.js"
+    weaken: "weaken.js",
+    utils: "utils.js",
+    formulas: "formulas.js"
 }
 
 let _ns: NS
-const SECURITY_THRESHOLD = 0.25
-const MONEY_THRESHOLD = 0.98
-const SLEEP_BUFFER = 30
+const SECURITY_THRESHOLD = 0
+const MONEY_THRESHOLD = 1
+const SLEEP_BUFFER = 300
 const BASE_TAKE_RATIO = 0.5
 const FREE_THREAD_RATIO_THRESHOLD = 0.1
 const WORKER_SERVER_NAME = "worker"
-const MAX_RUNTIME = new Date().valueOf() + 2 * 60 * 60 * 1000 // 2 hours
+let runtimeDuration = 10 * 60 * 1000 // 10m
+let MAX_RUNTIME = new Date().valueOf() + runtimeDuration
 
 type EnqueueOpResult = {
     success: boolean
@@ -87,6 +91,7 @@ class Worker {
             if (op.threads === 0) {
                 _ns.tprint(`[${this.name}] OP threads should not be 0: ${JSON.stringify(op)}`)
             }
+            op.host = this.name
             const pid = _ns.exec(op.script, this.name, op.threads, ...getOperationArgs(op), nonce)
             if (pid === 0) {
                 _ns.tprint(
@@ -106,9 +111,13 @@ class Target {
     name: string
     preconditioning: boolean = false
     scheduleAfter: number = new Date().valueOf()
+    deadCounter: number = 0
+    server: Server
+    batchNumber: number = 0
 
     constructor(name: string) {
         this.name = name
+        this.server = _ns.getServer(this.name)
     }
 
     getHackCost = () => {
@@ -135,18 +144,52 @@ class Target {
     }
 }
 
+type Assignment = {
+    batch: Operation[]
+    target: Target
+    abandon: boolean
+    precondition: boolean
+}
+
 type Operation = {
     script: string
     threads: number
-    target: string
-    finishAt: number
+    target: Target
+    host?: string
+    sleepFor: number
+    minSec: number
+    batchId: number
+    batchThreads?: number
+    opIdx: number
+    opCount?: number
+    tag: string
     nonce?: number
     pid?: number
     startedAt?: number
 }
 
+// const host = ns.args[0]
+// const target = ns.args[1]
+// const sleepFor = ns.args[2]
+// const batchId = ns.args[3]
+// const batchThreads = ns.args[4]
+// const opIdx = ns.args[5]
+// const opCount = ns.args[6]
+// const tag = ns.args[7]
+// const minSec = ns.args[8]
+
 const getOperationArgs = (op: Operation) => {
-    return [op.target, op.finishAt]
+    return [
+        op.host || "",
+        op.target.name,
+        op.sleepFor,
+        op.batchId,
+        op.batchThreads || 0,
+        op.opIdx,
+        op.opCount || -1,
+        op.tag,
+        op.minSec
+    ]
 }
 
 const getMaxThreads = (workers: Worker[]) => {
@@ -157,26 +200,26 @@ const getAvailableThreads = (workers: Worker[]) => {
     return workers.reduce((acc, worker) => acc + worker.getAvailableThreads(), 0)
 }
 
-const niceRound = (n: number): number => {
-    return Math.round((n + Number.EPSILON) * 100) / 100
-}
-
-const generatePreconditionOps = (target: Target, workers: Worker[]): Operation[] => {
+const generatePreconditionOps = (target: Target, workers: Worker[]): Assignment => {
     // ns.tprint(`[${target.name}] generating precondition ops`)
     const operations: Operation[] = []
     let availableThreads = getAvailableThreads(workers)
-    let weakenThreadsRequired = Math.ceil(target.getExtraSecurity() / 0.05)
     let prevWeaken = false
+    let now = new Date().valueOf()
+    const minTime = Math.max(target.scheduleAfter - now, 0)
 
     // weaken pre-conditioning
     if (target.getExtraSecurity() > SECURITY_THRESHOLD) {
-        const now = new Date().valueOf()
-        const minFinishAt = Math.max(target.scheduleAfter, now + _ns.getWeakenTime(target.name))
-        const weakenFinishAt = minFinishAt
+        let weakenThreadsRequired = Math.ceil(target.getExtraSecurity() / 0.05)
         prevWeaken = true
 
         if (weakenThreadsRequired === 0) {
-            return []
+            return {
+                batch: [],
+                target: target,
+                abandon: true,
+                precondition: true
+            }
         } else if (weakenThreadsRequired >= availableThreads) {
             weakenThreadsRequired = availableThreads
             availableThreads = 0
@@ -189,10 +232,19 @@ const generatePreconditionOps = (target: Target, workers: Worker[]): Operation[]
             operations.push({
                 script: SCRIPTS.weaken,
                 threads: weakenThreadsRequired,
-                finishAt: weakenFinishAt,
-                target: target.name
+                sleepFor: minTime,
+                target: target,
+                batchId: target.batchNumber,
+                tag: "precondition:weaken-partial",
+                opIdx: 1,
+                minSec: _ns.getServerMinSecurityLevel(target.name)
             })
-            return operations
+            return {
+                batch: operations,
+                target: target,
+                abandon: false,
+                precondition: true
+            }
         } else {
             // ns.print(
             //     `Generating precondition (weaken) batch for ${target.name} (extra: ${
@@ -202,15 +254,24 @@ const generatePreconditionOps = (target: Target, workers: Worker[]): Operation[]
             operations.push({
                 script: SCRIPTS.weaken,
                 threads: weakenThreadsRequired,
-                finishAt: weakenFinishAt,
-                target: target.name
+                sleepFor: minTime,
+                target: target,
+                batchId: target.batchNumber,
+                tag: "precondition:weaken-full",
+                opIdx: 1,
+                minSec: _ns.getServerMinSecurityLevel(target.name)
             })
             availableThreads -= weakenThreadsRequired
         }
     }
 
     if (prevWeaken && availableThreads < 2) {
-        return operations
+        return {
+            batch: operations,
+            target: target,
+            abandon: false,
+            precondition: true
+        }
     }
 
     // grow preconditioning
@@ -218,8 +279,6 @@ const generatePreconditionOps = (target: Target, workers: Worker[]): Operation[]
         let valid = false
         let decrementer = 1
         while (!valid && decrementer > 0) {
-            const now = new Date().valueOf()
-            const minFinishAt = Math.max(target.scheduleAfter, now + _ns.getWeakenTime(target.name))
             const growRatio = Math.max(
                 (_ns.getServerMaxMoney(target.name) / _ns.getServerMoneyAvailable(target.name)) * 1.1 * decrementer,
                 1
@@ -228,8 +287,10 @@ const generatePreconditionOps = (target: Target, workers: Worker[]): Operation[]
             const growSecGrowth = _ns.growthAnalyzeSecurity(growThreadsRequired)
             const weakenThreadsRequired = Math.ceil(growSecGrowth / 0.05)
 
-            const growFinishAt = minFinishAt + (prevWeaken ? SLEEP_BUFFER : 0)
-            const weakenFinishAt = minFinishAt + SLEEP_BUFFER + (prevWeaken ? SLEEP_BUFFER : 0)
+            const growSleep = prevWeaken
+                ? Math.ceil(_ns.getWeakenTime(target.name) - _ns.getGrowTime(target.name) + SLEEP_BUFFER)
+                : 0
+            const weakenSleep = SLEEP_BUFFER + (prevWeaken ? SLEEP_BUFFER : 0)
 
             if (growThreadsRequired === 0 || weakenThreadsRequired === 0) {
                 decrementer = 0
@@ -244,14 +305,22 @@ const generatePreconditionOps = (target: Target, workers: Worker[]): Operation[]
                     {
                         script: SCRIPTS.grow,
                         threads: growThreadsRequired,
-                        finishAt: growFinishAt,
-                        target: target.name
+                        sleepFor: growSleep + minTime,
+                        target: target,
+                        batchId: target.batchNumber,
+                        tag: "precondition:grow",
+                        opIdx: prevWeaken ? 2 : 1,
+                        minSec: _ns.getServerMinSecurityLevel(target.name)
                     },
                     {
                         script: SCRIPTS.weaken,
                         threads: weakenThreadsRequired,
-                        finishAt: weakenFinishAt,
-                        target: target.name
+                        sleepFor: weakenSleep + minTime,
+                        target: target,
+                        batchId: target.batchNumber,
+                        tag: "precondition:weaken2",
+                        opIdx: prevWeaken ? 3 : 2,
+                        minSec: _ns.getServerMinSecurityLevel(target.name)
                     }
                 )
                 valid = true
@@ -262,73 +331,95 @@ const generatePreconditionOps = (target: Target, workers: Worker[]): Operation[]
     }
 
     // ns.tprint(`[${target.name}] completed precondition ops`)
-    return operations
+    return {
+        batch: operations,
+        target: target,
+        abandon: operations.length === 0,
+        precondition: true
+    }
 }
 
-const generateHackOps = (target: Target, workers: Worker[]) => {
+const generateHackOps = (target: Target, workers: Worker[]): Assignment => {
     // ns.tprint(`[${target.name}] generating hack ops`)
     let operations: Operation[] = []
     let takeRatio = BASE_TAKE_RATIO
-    const secMult = target.getExtraSecurity() > 0 ? 1 : 0
     const availableThreads = getAvailableThreads(workers)
 
     let valid = false
-    const decrementer = takeRatio * 0.01
+    const decrementer = takeRatio * 0.05
+    const server = _ns.getServer(target.name)
+    const minServerSec = { ...server, hackDifficulty: server.minDifficulty }
+    const player = _ns.getPlayer()
     while (!valid && takeRatio > 0) {
         const now = new Date().valueOf()
-        const minFinishAt = Math.max(target.scheduleAfter, now + _ns.getWeakenTime(target.name))
         const toTake = _ns.getServerMaxMoney(target.name) * takeRatio
-        const hackThreadsRequired = Math.floor(_ns.hackAnalyzeThreads(target.name, toTake))
-        const hackSecGrowth = _ns.hackAnalyzeSecurity(hackThreadsRequired) * 1.1
-        const weaken1ThreadsRequired = Math.ceil((hackSecGrowth + target.getExtraSecurity() * secMult) / 0.05)
+        const percentHacked = _ns.formulas.hacking.hackPercent(minServerSec, player)
+        const hackThreads = Math.floor(toTake / Math.floor(server.moneyMax * percentHacked))
+        const hackSecGrowth = _ns.hackAnalyzeSecurity(hackThreads) * 1.1
+        const weaken1Threads = Math.ceil(hackSecGrowth / 0.05)
         const growRatio = Math.max(
-            (_ns.getServerMaxMoney(target.name) / (_ns.getServerMoneyAvailable(target.name) - toTake + 1)) * 1.1,
+            (_ns.getServerMaxMoney(target.name) / (_ns.getServerMaxMoney(target.name) - toTake + 1)) * 1.1,
             1
         )
-        const growThreadsRequired = Math.ceil(_ns.growthAnalyze(target.name, growRatio))
-        const growSecGrowth = _ns.growthAnalyzeSecurity(growThreadsRequired) * 1.1
-        const weaken2ThreadsRequired = Math.ceil(growSecGrowth / 0.05)
+        const growThreads = Math.ceil(_ns.growthAnalyze(target.name, growRatio))
+        const growSecGrowth = _ns.growthAnalyzeSecurity(growThreads) * 1.1
+        const weaken2Threads = Math.ceil(growSecGrowth / 0.05)
 
-        const hackFinishAt = minFinishAt
-        const weaken1FinishAt = minFinishAt + SLEEP_BUFFER
-        const growFinishAt = minFinishAt + SLEEP_BUFFER * 2
-        const weaken2FinishAt = minFinishAt + SLEEP_BUFFER * 3
+        const minTime = Math.max(target.scheduleAfter - now, 0)
+        const hackSleep = Math.ceil(
+            _ns.formulas.hacking.weakenTime(minServerSec, player) - _ns.formulas.hacking.hackTime(minServerSec, player)
+        )
+        const weaken1Sleep = SLEEP_BUFFER
+        const growSleep = Math.ceil(
+            _ns.formulas.hacking.weakenTime(minServerSec, player) -
+                _ns.formulas.hacking.growTime(minServerSec, player) +
+                SLEEP_BUFFER * 2
+        )
+        const weaken2Sleep = Math.ceil(SLEEP_BUFFER * 3)
 
-        if (
-            hackThreadsRequired === 0 ||
-            weaken1ThreadsRequired === 0 ||
-            growThreadsRequired === 0 ||
-            weaken2ThreadsRequired === 0
-        ) {
+        if (hackThreads === 0 || weaken1Threads === 0 || growThreads === 0 || weaken2Threads === 0) {
             takeRatio = 0
-        } else if (
-            hackThreadsRequired + growThreadsRequired + weaken1ThreadsRequired + weaken2ThreadsRequired <
-            availableThreads
-        ) {
+        } else if (hackThreads + growThreads + weaken1Threads + weaken2Threads < availableThreads) {
             operations = [
                 {
                     script: SCRIPTS.hack,
-                    threads: hackThreadsRequired,
-                    finishAt: hackFinishAt,
-                    target: target.name
+                    threads: hackThreads,
+                    sleepFor: hackSleep + minTime,
+                    target: target,
+                    batchId: target.batchNumber,
+                    tag: "hack",
+                    opIdx: 1,
+                    minSec: _ns.getServerMinSecurityLevel(target.name)
                 },
                 {
                     script: SCRIPTS.weaken,
-                    threads: weaken1ThreadsRequired,
-                    finishAt: weaken1FinishAt,
-                    target: target.name
+                    threads: weaken1Threads,
+                    sleepFor: weaken1Sleep + minTime,
+                    target: target,
+                    batchId: target.batchNumber,
+                    tag: "weaken1",
+                    opIdx: 2,
+                    minSec: _ns.getServerMinSecurityLevel(target.name)
                 },
                 {
                     script: SCRIPTS.grow,
-                    threads: growThreadsRequired,
-                    finishAt: growFinishAt,
-                    target: target.name
+                    threads: growThreads,
+                    sleepFor: growSleep + minTime,
+                    target: target,
+                    batchId: target.batchNumber,
+                    tag: "grow",
+                    opIdx: 3,
+                    minSec: _ns.getServerMinSecurityLevel(target.name)
                 },
                 {
                     script: SCRIPTS.weaken,
-                    threads: weaken2ThreadsRequired,
-                    finishAt: weaken2FinishAt,
-                    target: target.name
+                    threads: weaken2Threads,
+                    sleepFor: weaken2Sleep + minTime,
+                    target: target,
+                    batchId: target.batchNumber,
+                    tag: "weaken2",
+                    opIdx: 4,
+                    minSec: _ns.getServerMinSecurityLevel(target.name)
                 }
             ]
             valid = true
@@ -338,44 +429,60 @@ const generateHackOps = (target: Target, workers: Worker[]) => {
     }
 
     // ns.tprint(`[${target.name}] completed hack ops`)
-    return operations
+    return {
+        batch: operations,
+        target: target,
+        abandon: operations.length === 0,
+        precondition: false
+    }
 }
 
-export const distributeToNetwork = (
-    target: Target,
-    batch: Operation[],
-    workers: Worker[],
-    precondition: boolean = false
-) => {
+export const distributeToNetwork = (assignments: Assignment[], workers: Worker[]) => {
     // ns.tprint(`[${target.name}] distribute start`)
     const toExecute: { [k in string]: Worker } = {}
+    const now = new Date().valueOf()
     let abandon = false
-    let latestFinish = batch.reduce(
-        (acc, op) => (acc > op.finishAt ? acc : op.finishAt),
-        _ns.getWeakenTime(target.name)
-    )
 
-    for (let op of batch) {
-        // ns.tprint("Op ", op, " abandon ", abandon)
-        const availableWorkers = workers.filter((server) => server.getAvailableThreads() > 0)
-        let threadsRequired = op.threads
-        for (let worker of availableWorkers) {
-            const result = worker.enqueueOp(op, threadsRequired)
-            // ns.tprint(`Enqueue on ${worker.name} result: ${JSON.stringify(result)}`)
-            if (result.success) {
-                threadsRequired = result.remainder
-                if (toExecute[worker.name] == null) {
-                    toExecute[worker.name] = worker
+    for (let assignment of assignments) {
+        const batchThreads = assignment.batch.reduce((acc, op) => acc + op.threads, 0)
+
+        for (let op of assignment.batch) {
+            op.opCount = assignment.batch.length
+            op.batchThreads = batchThreads
+            // ns.tprint("Op ", op, " abandon ", abandon)
+            const availableWorkers = workers.filter((server) => server.getAvailableThreads() > 0)
+            let threadsRequired = op.threads
+            for (let worker of availableWorkers) {
+                const result = worker.enqueueOp(op, threadsRequired)
+                // ns.tprint(`Enqueue on ${worker.name} result: ${JSON.stringify(result)}`)
+                if (result.success) {
+                    threadsRequired = result.remainder
+                    if (toExecute[worker.name] == null) {
+                        toExecute[worker.name] = worker
+                    }
+                }
+                // ns.tprint(`remaining threads: ${threadsRequired}`)
+                if (threadsRequired === 0) {
+                    break
                 }
             }
-            // ns.tprint(`remaining threads: ${threadsRequired}`)
-            if (threadsRequired === 0) {
+            if (threadsRequired > 0) {
+                abandon = true
                 break
             }
         }
-        if (threadsRequired > 0) {
-            abandon = true
-            break
+
+        if (!abandon) {
+            assignment.target.batchNumber += 1
+            assignment.target.scheduleAfter = Math.max(
+                assignment.target.scheduleAfter + SLEEP_BUFFER * assignment.batch.length,
+                now + SLEEP_BUFFER * assignment.batch.length
+            )
+
+            if (assignment.precondition) {
+                assignment.target.preconditioning = true
+                assignment.target.scheduleAfter = now + _ns.getWeakenTime(assignment.target.name) + SLEEP_BUFFER
+            }
         }
     }
 
@@ -388,13 +495,7 @@ export const distributeToNetwork = (
     }
     // ns.tprint(`[${target.name}] Assign / abandon finished`)
 
-    if (!abandon) {
-        target.scheduleAfter = latestFinish + SLEEP_BUFFER
-
-        if (precondition) {
-            target.preconditioning = true
-        }
-    }
+    // return !abandon
 
     // ns.tprint(`[${target.name}] distribute complete`)
 }
@@ -440,6 +541,8 @@ const doConfigure = async (props: ConfigProps, previousConfig?: Config): Promise
         .filter((name) => !props.excludeList.includes(name))
         .filter((name) => !props.excludeListReverse.some((e) => name.includes(e)))
         .filter((name) => pwn(_ns, name))
+        .filter((name) => _ns.getWeakenTime(name) < 3 * 60 * 1000)
+    // .filter((name) => ["foodnstuff"].includes(name))
 
     // filter out the "hard" to precondition ones if there are still quicker targets (10 minute limit)
     if (targetServers.filter((name) => _ns.getWeakenTime(name) < 10 * 60 * 1000).length !== 0) {
@@ -486,7 +589,7 @@ const doConfigure = async (props: ConfigProps, previousConfig?: Config): Promise
                 const worker = new Worker(workerName, ram)
                 if (worker.getAvailableThreads() > 1) {
                     _ns.print(`Adding new worker: ${JSON.stringify(worker)}`)
-                    await _ns.scp([SCRIPTS.grow, SCRIPTS.hack, SCRIPTS.weaken], worker.name)
+                    await _ns.scp([SCRIPTS.grow, SCRIPTS.hack, SCRIPTS.weaken, SCRIPTS.utils], worker.name)
                     workers.push(worker)
                 }
             }
@@ -556,7 +659,7 @@ const doConfigure = async (props: ConfigProps, previousConfig?: Config): Promise
                 const worker = new Worker(workerName, ram)
                 if (worker.getAvailableThreads() > 1) {
                     _ns.print(`Adding new worker: ${JSON.stringify(worker)}`)
-                    await _ns.scp([SCRIPTS.grow, SCRIPTS.hack, SCRIPTS.weaken], worker.name)
+                    await _ns.scp([SCRIPTS.grow, SCRIPTS.hack, SCRIPTS.weaken, SCRIPTS.utils], worker.name)
                     workers.push(worker)
                 }
             }
@@ -676,7 +779,13 @@ export async function main(ns: NS) {
         // option to kill other scripts on worker servers: [true] / false
         killOtherScripts: true,
         // list of script names to not kill, regardless of `killOtherScripts` option
-        scriptAllowlist: [_ns.getScriptName()].concat("contracts.js", "share.js", "wget-all.js"),
+        scriptAllowlist: [_ns.getScriptName()].concat(
+            "contracts.js",
+            "share.js",
+            "wget-all.js",
+            "monitor.js",
+            "tracer.js"
+        ),
         // list of servers NOT to use as workers (exact name match)
         excludeList: ["sharing"],
         // list of servers NOT to use as workers (regex-like via inverse `includes`)
@@ -698,91 +807,105 @@ export async function main(ns: NS) {
         }
     }
 
-    let iters = 0
     let lastPurchaseResult = ""
 
     while (true) {
+        let now = new Date()
         // ~ every second
-        if (iters % 25 === 0) {
-            let now = new Date()
-            if (now.valueOf() > MAX_RUNTIME) {
-                // respawn every 2h
-                _ns.spawn(_ns.getScriptName())
-            }
-
-            // ns.tprint("started config regen")
-            config = await doConfigure(configProps, config)
-            // ns.tprint("completed config regen")
-
-            _ns.clearLog()
-            _ns.print(`=============================================`)
-            _ns.print(`Time: ${now.toLocaleDateString()} ${now.toLocaleTimeString()}`)
-            _ns.print(
-                `Available threads: ${getAvailableThreads(config.workers)} / ${getMaxThreads(
-                    config.workers
-                )} (${niceRound((getAvailableThreads(config.workers) / getMaxThreads(config.workers)) * 100.0)}%)`
-            )
-
-            const purchaseResult = maybeBuyServer(config)
-            if (purchaseResult.length > 0) {
-                lastPurchaseResult = purchaseResult
-            }
-
-            if (lastPurchaseResult.length > 0) {
-                _ns.print(lastPurchaseResult)
-            }
-
-            _ns.print(`Optimized: ${config.optimized.length}, Precondition: ${config.precondition.length}`)
-
-            if (config.optimized.length > 0) {
-                let o = config.optimized[0]
-                _ns.print(
-                    `[O: ${o.name}]: Extrasec: ${niceRound(o.getExtraSecurity())}, Money: ${niceRound(
-                        o.getAvailableMoneyRatio()
-                    )}, Cost: ${niceRound(o.getHackCost())}`
-                )
-            }
-
-            if (config.precondition.length > 0) {
-                let p = config.precondition[0]
-                _ns.print(
-                    `[P: ${p.name}]: Extrasec: ${niceRound(p.getExtraSecurity())}, Money: ${niceRound(
-                        p.getAvailableMoneyRatio()
-                    )}, Cost: ${niceRound(p.getHackCost())}`
-                )
-            }
-            _ns.print(`=============================================`)
-        }
-
+        // if (iters % 25 === 0) {
         // ns.tprint(`now: ${new Date().valueOf()}`)
         // try to schedule at least the most optimal hack()
+        if (now.valueOf() > MAX_RUNTIME) {
+            // respawn every 10m
+            MAX_RUNTIME = new Date().valueOf() + runtimeDuration
+            _ns.spawn(_ns.getScriptName())
+        }
+
+        config = await doConfigure(configProps, config)
+
+        _ns.clearLog()
+        _ns.print(`=============================================`)
+        _ns.print(`Time: ${now.toLocaleDateString()} ${now.toLocaleTimeString()}`)
+        _ns.print(
+            `Available threads: ${getAvailableThreads(config.workers)} / ${getMaxThreads(config.workers)} (${niceRound(
+                (getAvailableThreads(config.workers) / getMaxThreads(config.workers)) * 100.0
+            )}%)`
+        )
+
+        const purchaseResult = maybeBuyServer(config)
+        if (purchaseResult.length > 0) {
+            lastPurchaseResult = purchaseResult
+        }
+
+        if (lastPurchaseResult.length > 0) {
+            _ns.print(lastPurchaseResult)
+        }
+
+        _ns.print(`Optimized: ${config.optimized.length}, Precondition: ${config.precondition.length}`)
+
+        if (config.optimized.length > 0) {
+            let o = config.optimized[0]
+            _ns.print(
+                `[O: ${o.name}]: Extrasec: ${niceRound(o.getExtraSecurity())}, Money: ${niceRound(
+                    o.getAvailableMoneyRatio()
+                )}, Cost: ${niceRound(o.getHackCost())}`
+            )
+        }
+
+        if (config.precondition.length > 0) {
+            let p = config.precondition[0]
+            _ns.print(
+                `[P: ${p.name}]: Extrasec: ${niceRound(p.getExtraSecurity())}, Money: ${niceRound(
+                    p.getAvailableMoneyRatio()
+                )}, Cost: ${niceRound(p.getHackCost())}`
+            )
+        }
+        _ns.print(`=============================================`)
+
+        const player = _ns.getPlayer()
+
         let firstOptimalName = ""
+        let assignments: Assignment[] = []
         if (getAvailableThreads(config.workers) > 4 && config.optimized.length > 0) {
             let firstOptimal = config.optimized[0]
             // ns.tprint(`Starting check for optimal[0] ${firstOptimal.name}`)
             firstOptimalName = firstOptimal.name
-            let maxCycleTime = _ns.getWeakenTime(firstOptimal.name) * 2
-            let now = new Date().valueOf()
+            const server = _ns.getServer(firstOptimal.name)
+            const minServerSec = { ...server, hackDifficulty: server.minDifficulty }
+            let maxCycleTime = _ns.formulas.hacking.hackTime(minServerSec, player) - 100
+            let scheduleNow = new Date().valueOf()
             let valid = true
-            while (firstOptimal.scheduleAfter < now + maxCycleTime && valid) {
+            // let scheduled = false
+            if (firstOptimal.scheduleAfter < scheduleNow + maxCycleTime && valid) {
                 // ns.tprint(`Trying to schedule optimal[0] ${firstOptimal.name} hack`)
                 // ns.print(
                 //     `firstOptimal.scheduleAfter: ${
                 //         firstOptimal.scheduleAfter
                 //     }, now: ${now}, maxCycle: ${maxCycleTime}, now+: ${now + maxCycleTime}`
                 // )
-                const ops = generateHackOps(firstOptimal, config.workers)
-                // ns.tprint("ops ", ops)
-                if (ops.length > 0) {
-                    // assign / distribute
-                    // ns.tprint(`Distributing optimal[0] ${firstOptimal.name} assignment`)
-                    distributeToNetwork(firstOptimal, ops, config.workers)
-                    // ns.tprint(`Distributed optimal[0] ${firstOptimal.name} assignment`)
-                } else {
-                    valid = false
+                const assignment = generateHackOps(firstOptimal, config.workers)
+                if (!assignment.abandon) {
+                    assignments.push(assignment)
                 }
-                now = new Date().valueOf()
+
+                // ns.tprint("ops ", ops)
+                // if (ops.length > 0) {
+                //     // assign / distribute
+                //     // ns.tprint(`Distributing optimal[0] ${firstOptimal.name} assignment`)
+                //     let assigned = distributeToNetwork(firstOptimal, ops, config.workers)
+                //     // if (assigned) {
+                //     //     scheduled = true
+                //     // }
+                //     // ns.tprint(`Distributed optimal[0] ${firstOptimal.name} assignment`)
+                // } else {
+                //     valid = false
+                // }
+                // scheduleNow = new Date().valueOf()
             }
+            // if (scheduled) {
+            //     // enforce a cycle wait
+            //     firstOptimal.scheduleAfter = _ns.getWeakenTime(firstOptimal.name) * 2.1
+            // }
             // ns.tprint(`Completed check for optimal[0] ${firstOptimal.name}`)
         }
 
@@ -790,16 +913,20 @@ export async function main(ns: NS) {
         if (getAvailableThreads(config.workers) > 2 && config.precondition.length > 0) {
             let firstPrecondition = config.precondition[0]
             let now = new Date().valueOf()
+            // ns.tprint(`scheduleAfter: ${firstPrecondition.scheduleAfter}, now: ${now}`)
             if (firstPrecondition.scheduleAfter < now) {
                 // ns.tprint(`Trying to schedule preconditioning[0] ${firstPrecondition.name} conditions`)
-                const ops = generatePreconditionOps(firstPrecondition, config.workers)
-                // ns.print("precondition ops ", JSON.stringify(ops))
-                if (ops.length > 0) {
-                    // assign / distribute
-                    // ns.tprint(`Distributing preconditioning[0] ${firstPrecondition.name} assignment`)
-                    distributeToNetwork(firstPrecondition, ops, config.workers, true)
-                    // ns.tprint(`Distributed preconditioning[0] ${firstPrecondition.name} assignment`)
+                const assignment = generatePreconditionOps(firstPrecondition, config.workers)
+                if (!assignment.abandon) {
+                    assignments.push(assignment)
                 }
+                // ns.print("precondition ops ", JSON.stringify(ops))
+                // if (ops.length > 0) {
+                //     // assign / distribute
+                //     // ns.tprint(`Distributing preconditioning[0] ${firstPrecondition.name} assignment`)
+                //     distributeToNetwork(firstPrecondition, ops, config.workers, true)
+                //     // ns.tprint(`Distributed preconditioning[0] ${firstPrecondition.name} assignment`)
+                // }
             }
         }
 
@@ -808,23 +935,41 @@ export async function main(ns: NS) {
         if (getAvailableThreads(config.workers) > 4) {
             for (let target of config.optimized) {
                 if (getAvailableThreads(config.workers) > 4 && !exhausted && target.name !== firstOptimalName) {
-                    let maxCycleTime = _ns.getWeakenTime(target.name) * 2
+                    const server = _ns.getServer(target.name)
+                    const minServerSec = { ...server, hackDifficulty: server.minDifficulty }
+                    let maxCycleTime = _ns.formulas.hacking.hackTime(minServerSec, player) - 100
                     let now = new Date().valueOf()
                     let valid = true
-                    while (target.scheduleAfter < now + maxCycleTime && valid) {
+                    // let scheduled = false
+                    if (target.scheduleAfter < now + maxCycleTime && valid) {
                         // ns.tprint(`Trying to schedule a target hack for ${target.name}`)
                         const ops = generateHackOps(target, config.workers)
-                        if (ops.length > 0) {
-                            // ns.print("assign ops ", JSON.stringify(ops))
-                            // assign / distribute
-                            // ns.tprint(`Distributing ${target.name} hack`)
-                            distributeToNetwork(target, ops, config.workers)
-                            // ns.tprint(`Distributed ${target.name} hack`)
+
+                        const assignment = generateHackOps(target, config.workers)
+                        if (!assignment.abandon) {
+                            assignments.push(assignment)
                         } else {
                             valid = false
                         }
-                        now = new Date().valueOf()
+
+                        // if (ops.length > 0) {
+                        //     // ns.print("assign ops ", JSON.stringify(ops))
+                        //     // assign / distribute
+                        //     // ns.tprint(`Distributing ${target.name} hack`)
+                        //     const assigned = distributeToNetwork(target, ops, config.workers)
+                        //     if (assigned) {
+                        //         scheduled = true
+                        //     }
+                        //     // ns.tprint(`Distributed ${target.name} hack`)
+                        // } else {
+                        //     valid = false
+                        // }
+                        // now = new Date().valueOf()
                     }
+                    // if (scheduled) {
+                    //     // enforce a cycle wait
+                    //     target.scheduleAfter = _ns.getWeakenTime(target.name) * 2.1
+                    // }
                 }
                 if (getAvailableThreads(config.workers) <= 4) {
                     exhausted = true
@@ -833,10 +978,10 @@ export async function main(ns: NS) {
             }
         }
 
-        // ns.print("config second ", JSON.stringify(config))
-        //
+        if (assignments.length > 0) {
+            distributeToNetwork(assignments, config.workers)
+        }
 
         await _ns.asleep(SLEEP_BUFFER)
-        iters = (iters + 1) % 10000
     }
 }

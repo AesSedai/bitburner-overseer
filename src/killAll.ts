@@ -2,7 +2,7 @@ import { NS } from "../types/bitburner"
 import { scrape } from "./scrape"
 
 export const killAll = (ns: NS, home: boolean = false) => {
-    const exempt = [ns.getScriptName()].concat("contracts.js", "share.js", "wget-all.js")
+    const exempt = [ns.getScriptName()].concat("contracts.js", "share.js", "wget-all.js", "monitor.js", "tracer.js")
 
     for (let server of Object.keys(scrape(ns))) {
         const processes = ns.ps(server)

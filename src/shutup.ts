@@ -22,4 +22,5 @@ export const shutup = (ns: NS) => {
     ns.disableLog("nuke")
     ns.disableLog("getServerNumPortsRequired")
     ns.disableLog("getServerGrowth")
+    ns.disableLog("getServerRequiredHackingLevel")
 }
